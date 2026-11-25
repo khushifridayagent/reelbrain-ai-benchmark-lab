@@ -64,6 +64,6 @@ jobs:
           if q and not q.startswith('gsk_'):
               print('Groq credential format mismatch'); q=''
           a=call('Gemini','https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent',g,{'contents':[{'parts':[{'text':prompt}]}]},{'x-goog-api-key':g})
-          b=call('Groq','https://api.groq.com/openai/v1/chat/completions',q,{'model':'llama-3.1-8b-instant','messages':[{'role':'user','content':prompt}]},{'Authorization':'Bearer '+q})
+          b=call('Groq','https://api.groq.com/openai/v1/chat/completions',q,{'model':'openai/gpt-oss-20b','messages':[{'role':'user','content':prompt}]},{'Authorization':'Bearer '+q})
           raise SystemExit(0 if a and b else 1)
           PY
