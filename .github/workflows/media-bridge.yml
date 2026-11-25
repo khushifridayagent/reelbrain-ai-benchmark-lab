@@ -1,4 +1,4 @@
-name: Ephemeral authorized media benchmark bridge
+name: Corrected static-slide media benchmark bridge
 on:
   push:
     paths: ['.github/workflows/media-bridge.yml']
