@@ -1,0 +1,90 @@
+name: Provider access diagnostics v2
+on:
+  push:
+    paths: ['.github/workflows/provider-diagnostics.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Discover and test current providers without logging keys
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: |
+          python - <<'PY'
+          import os,json,re,time,urllib.request,urllib.error
+          def request(label,url,headers,body=None):
+              start=time.monotonic()
+              try:
+                  r=urllib.request.Request(url,headers=headers,data=None if body is None else json.dumps(body).encode())
+                  with urllib.request.urlopen(r,timeout=35) as res:
+                      data=json.load(res)
+                  print(label,'HTTP 200',round(time.monotonic()-start,3),'s',flush=True)
+                  return data,200
+              except urllib.error.HTTPError as e:
+                  raw=e.read(32768).decode('utf-8','replace')
+                  try:
+                      error=json.loads(raw).get('error',{})
+                      if not isinstance(error,dict): error={}
+                  except Exception: error={}
+                  fields=[]
+                  for field in ('code','type','status'):
+                      v=error.get(field)
+                      if isinstance(v,int) or isinstance(v,str) and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,79}',v):
+                          fields.append(field+'='+str(v))
+                  msg=str(error.get('message','')).lower()
+                  labels={'region':'region','country':'country','location':'location','permission':'permission','blocked':'blocked','organization':'organization','project':'project','billing':'billing','api key':'api_key','not found':'not_found','not supported':'not_supported','decommission':'decommission','quota':'quota','terms':'terms','disabled':'disabled','unauthorized':'unauthorized'}
+                  hits=[v for k,v in labels.items() if k in msg]
+                  print(label,'HTTP',e.code,' '.join(fields),'hints='+','.join(hits),'json_error='+str(bool(error)),flush=True)
+                  return None,e.code
+              except Exception as e:
+                  print(label,type(e).__name__,flush=True);return None,0
+          def verify(data,provider):
+              if provider=='Gemini':
+                  parts=data.get('candidates',[{}])[0].get('content',{}).get('parts',[])
+                  out=' '.join(p.get('text','') for p in parts if not p.get('thought'))
+              else:
+                  out=data.get('choices',[{}])[0].get('message',{}).get('content') or ''
+              return 'RB-731' in out
+          g=os.getenv('GEMINI_API_KEY','').strip()
+          q=os.getenv('GROQ_API_KEY','').strip()
+          go=qo=False
+          if not g: print('Gemini MISSING_SECRET')
+          else:
+              gh={'x-goog-api-key':g,'Content-Type':'application/json'}
+              base='https://generativelanguage.googleapis.com/v1beta/'
+              models,status=request('Gemini list',base+'models?pageSize=100',gh)
+              if models:
+                  ids=[m['name'].removeprefix('models/') for m in models.get('models',[]) if 'generateContent' in m.get('supportedGenerationMethods',[]) and re.fullmatch(r'models/gemini-[a-z0-9.-]+',m.get('name',''))]
+                  print('Gemini generateContent catalog:',','.join(ids))
+                  preferred=['gemini-3.5-flash-lite','gemini-3.1-flash-lite','gemini-3.8-flash','gemini-3.6-flash','gemini-2.5-flash-lite']
+                  for m in [x for x in preferred if x in ids][:3]:
+                      data,status=request('Gemini '+m,base+'models/'+m+':generateContent',gh,{'contents':[{'parts':[{'text':'Return exactly RB-731.'}]}]})
+                      if data and verify(data,'Gemini'):
+                          print('GEMINI_PASS',m,flush=True);go=True;break
+                      if status in (401,429):break
+          if not q: print('Groq MISSING_SECRET')
+          elif q.startswith('xai-'):
+              print('GROQ_WRONG_PROVIDER_KEY: xAI/Grok credential must not be sent to Groq')
+          else:
+              print('Groq key format matches expected provider:',q.startswith('gsk_'))
+              if q.startswith('gsk_'):
+                  qh={'Authorization':'Bearer '+q,'Content-Type':'application/json'}
+                  base='https://api.groq.com/openai/v1/'
+                  models,status=request('Groq list',base+'models',qh)
+                  if models:
+                      ids=[m['id'] for m in models.get('data',[]) if re.fullmatch(r'[A-Za-z0-9_./-]+',m.get('id',''))]
+                      print('Groq catalog:',','.join(ids))
+                      for m in [x for x in ['llama-3.1-8b-instant','llama-3.3-70b-versatile','openai/gpt-oss-20b'] if x in ids][:3]:
+                          data,status=request('Groq '+m,base+'chat/completions',qh,{'model':m,'messages':[{'role':'user','content':'Return exactly RB-731.'}],'max_completion_tokens':128})
+                          if data and verify(data,'Groq'):
+                              print('GROQ_PASS',m,flush=True);qo=True;break
+                          if status in (401,429):break
+              else: print('GROQ_UNKNOWN_KEY_FORMAT: no credential sent')
+          print('RESULT Gemini='+str(go)+' Groq='+str(qo))
+          raise SystemExit(0 if go and qo else 1)
+          PY
