@@ -1,0 +1,36 @@
+name: Mixed carousel acquisition verification
+on:
+  push:
+    paths: ['.github/workflows/carousel-verification.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install media extraction tools
+        run: |
+          python -m pip install --quiet gallery-dl opencv-python-headless pillow requests
+          command -v ffprobe
+          command -v tesseract
+      - name: Verify all five carousel assets without provider API calls
+        run: |
+          python -u - <<'PY'
+          import benchmark_media as b, json
+          d=b.ROOT/'gallery';d.mkdir()
+          rc,t,o,e=b.run(['gallery-dl','--retries','0','--http-timeout','12','-D',str(d),b.CASES['post']],45)
+          assets=[]
+          for p in b.files(d):
+              info=b.probe(p)
+              if info: assets.append({'kind':'video' if info['duration_s']>0 else 'image',**info})
+          s=(o+e).decode(errors='replace').lower()
+          print('CAROUSEL_VERIFY',json.dumps({'return_code':rc,'seconds':t,'expected':5,'found':len(assets),'assets':assets,'error_categories':[x for x in ['login','429','403','private','not found','rate limit','timeout','unsupported','unavailable','redirect','401','unrecognized arguments'] if x in s]}))
+          PY
