@@ -1,0 +1,68 @@
+name: Ephemeral authorized media benchmark bridge
+on:
+  push:
+    paths: ['.github/workflows/media-bridge.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: media-bridge-lab
+  cancel-in-progress: false
+jobs:
+  bridge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Publish ephemeral RSA public key only
+        run: |
+          set -euo pipefail
+          umask 077
+          openssl genpkey -quiet -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$RUNNER_TEMP/rb-ephemeral-key.pem"
+          mkdir -p bridge
+          openssl rsa -in "$RUNNER_TEMP/rb-ephemeral-key.pem" -noout -modulus > "bridge/pubkey-$GITHUB_RUN_ID.txt"
+          git config user.name 'reelbrain-lab'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add "bridge/pubkey-$GITHUB_RUN_ID.txt"
+          git commit -m "Publish ephemeral benchmark public key $GITHUB_RUN_ID"
+          git push origin HEAD:main
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Prepare isolated processing tools
+        run: |
+          python -m pip install --quiet requests opencv-python-headless pillow
+          if ! command -v tesseract >/dev/null || ! tesseract --list-langs 2>/dev/null | grep -q '^hin$'; then sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg tesseract-ocr tesseract-ocr-hin; fi
+      - name: Receive encrypted source URL manifest
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 45); do
+            git fetch --quiet origin main
+            if git show "origin/main:bridge/payload-$GITHUB_RUN_ID.txt" > "$RUNNER_TEMP/rb-ciphertext.txt" 2>/dev/null; then
+              break
+            fi
+            sleep 4
+          done
+          test -s "$RUNNER_TEMP/rb-ciphertext.txt"
+          python - <<'PY'
+          import os,pathlib,subprocess,json
+          t=pathlib.Path(os.environ['RUNNER_TEMP'])
+          blocks=(t/'rb-ciphertext.txt').read_text().splitlines()
+          assert 0<len(blocks)<=200
+          data=b''.join(subprocess.run(['openssl','pkeyutl','-decrypt','-inkey',str(t/'rb-ephemeral-key.pem'),'-pkeyopt','rsa_padding_mode:oaep','-pkeyopt','rsa_oaep_md:sha256','-pkeyopt','rsa_mgf1_md:sha256'],input=bytes.fromhex(b),capture_output=True,check=True).stdout for b in blocks)
+          manifest=json.loads(data)
+          assert set(manifest)=={'post','reel1','reel2'}
+          (t/'rb-manifest.json').write_bytes(data)
+          print('Encrypted manifest received; source URLs not logged.')
+          PY
+          rm -f "$RUNNER_TEMP/rb-ephemeral-key.pem"
+      - name: Test actual source bytes
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: python -u benchmark_bridge.py "$RUNNER_TEMP/rb-manifest.json"
+      - name: Clear ephemeral manifest
+        if: always()
+        run: rm -f "$RUNNER_TEMP/rb-manifest.json" "$RUNNER_TEMP/rb-ephemeral-key.pem" "$RUNNER_TEMP/rb-ciphertext.txt"
