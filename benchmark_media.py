@@ -12,6 +12,13 @@ def run(args,timeout=40):
 def files(d):
     return sorted(p for p in d.rglob('*') if p.is_file() and p.suffix.lower() in ('.mp4','.webm','.mov','.jpg','.jpeg','.png','.webp') and p.stat().st_size>1000)
 def probe(p):
+    if p.suffix.lower() in ('.jpg','.jpeg','.png','.webp'):
+        try:
+            with Image.open(p) as image:
+                width,height=image.size
+                image.verify()
+            return {'duration_s':0.0,'audio':False,'size':p.stat().st_size,'width':width,'height':height,'sha256':hashlib.sha256(p.read_bytes()).hexdigest()}
+        except Exception:return None
     rc,s,b,e=run(['ffprobe','-v','error','-show_streams','-show_format','-of','json',str(p)],15)
     if rc:return None
     j=json.loads(b)
