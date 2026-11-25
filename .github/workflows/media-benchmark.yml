@@ -1,0 +1,31 @@
+name: Real Instagram media and multimodal benchmark
+on:
+  push:
+    paths: ['.github/workflows/media-benchmark.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Prepare open-source media tools
+        run: |
+          python -m pip install --quiet yt-dlp gallery-dl instaloader opencv-python-headless pillow requests
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg tesseract-ocr tesseract-ocr-hin espeak
+          yt-dlp --version
+          gallery-dl --version
+          instaloader --version
+      - name: Execute real input attempts and synthetic controls
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: python -u benchmark_media.py
