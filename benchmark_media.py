@@ -23,7 +23,7 @@ def acquire(case,url):
     for name in (['gallery-dl','yt-dlp','instaloader'] if case=='post' else ['yt-dlp','gallery-dl','instaloader']):
         d=ROOT/case/name;d.mkdir(parents=True)
         if name=='yt-dlp':args=['yt-dlp','--no-playlist','--no-warnings','--socket-timeout','12','--retries','0','--max-filesize','30M','-o',str(d/'%(id)s.%(ext)s'),url]
-        elif name=='gallery-dl':args=['gallery-dl','--retries','0','--timeout','12','-D',str(d),url]
+        elif name=='gallery-dl':args=['gallery-dl','--retries','0','--http-timeout','12','-D',str(d),url]
         else:args=['instaloader','--no-captions','--no-metadata-json','--no-video-thumbnails','--no-compress-json','--request-timeout','10','--max-connection-attempts','1','--dirname-pattern',str(d),'--','-'+url.rstrip('/').split('/')[-1]]
         rc,elapsed,o,e=run(args,25)
         valid=[(p,probe(p)) for p in files(d)]
