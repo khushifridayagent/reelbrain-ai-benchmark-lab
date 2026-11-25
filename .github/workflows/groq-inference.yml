@@ -1,0 +1,74 @@
+name: Actual Groq inference and speech verification
+on:
+  push:
+    paths: ['.github/workflows/groq-inference.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - name: Prepare synthetic speech
+        run: |
+          if ! command -v espeak >/dev/null; then sudo apt-get update -qq && sudo apt-get install -y -qq espeak; fi
+          espeak -s 145 -w /tmp/reelbrain-test.wav "The blue robot opens the green folder. Save the report."
+      - name: Verify text and speech independently
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: |
+          python - <<'PY'
+          import os, json, urllib.request, urllib.error, time, pathlib, uuid, re, wave
+          k=os.environ.get('GROQ_API_KEY','').strip()
+          assert k.startswith('gsk_'), 'Expected Groq Cloud key'
+          base='https://api.groq.com/openai/v1/'
+          headers={'Authorization':'Bearer '+k,'User-Agent':'reelbrain-lab/1.0','Accept':'application/json'}
+          def call(label,path,body=None,ct='application/json'):
+              start=time.monotonic()
+              try:
+                  req=urllib.request.Request(base+path,data=body,headers={**headers,'Content-Type':ct})
+                  with urllib.request.urlopen(req,timeout=45) as r: data=json.load(r)
+                  print(label,'HTTP 200 elapsed_s',round(time.monotonic()-start,3),flush=True)
+                  return data
+              except urllib.error.HTTPError as e:
+                  try:
+                      er=json.loads(e.read(32768)).get('error',{})
+                      code=er.get('code','')
+                      if not isinstance(code,str) or not re.fullmatch('[a-zA-Z0-9_]+',code):code='unspecified'
+                  except Exception:code='non_json'
+                  print(label,'HTTP',e.code,'code',code,flush=True)
+                  return None
+          catalog=call('Groq catalog','models') or {}
+          ids=[m['id'] for m in catalog.get('data',[]) if re.fullmatch('[A-Za-z0-9_./-]+',m.get('id',''))]
+          print('MODEL_CATALOG',','.join(ids),flush=True)
+          text_ok=False
+          for model in [m for m in ['llama-3.1-8b-instant','llama-3.3-70b-versatile','openai/gpt-oss-20b'] if m in ids][:2]:
+              d=call('Groq text '+model,'chat/completions',json.dumps({'model':model,'messages':[{'role':'user','content':'Return exactly RB-731.'}],'max_completion_tokens':128}).encode())
+              if d and 'RB-731' in (d.get('choices',[{}])[0].get('message',{}).get('content') or ''):
+                  print('GROQ_TEXT_PASS',model,flush=True);text_ok=True;break
+          audio_ok=False
+          audio=pathlib.Path('/tmp/reelbrain-test.wav').read_bytes()
+          with wave.open('/tmp/reelbrain-test.wav') as f:print('AUDIO_DURATION_S',round(f.getnframes()/f.getframerate(),3))
+          for model in [m for m in ['whisper-large-v3-turbo','whisper-large-v3'] if m in ids][:1]:
+              b=uuid.uuid4().hex
+              crlf=b'\r\n'
+              parts=[]
+              for field,value in [('model',model),('language','en'),('response_format','verbose_json'),('temperature','0')]:
+                  parts.extend([('--'+b).encode(),('Content-Disposition: form-data; name="'+field+'"').encode(),b'',value.encode()])
+              parts.extend([('--'+b).encode(),b'Content-Disposition: form-data; name="file"; filename="test.wav"',b'Content-Type: audio/wav',b'',audio,('--'+b+'--').encode(),b''])
+              d=call('Groq ASR '+model,'audio/transcriptions',crlf.join(parts),'multipart/form-data; boundary='+b)
+              if d:
+                  words=re.findall('[a-z]+',d.get('text','').lower())
+                  expected='the blue robot opens the green folder save the report'.split()
+                  row=list(range(len(words)+1))
+                  for i,w in enumerate(expected,1):
+                      nextrow=[i]
+                      for j,v in enumerate(words,1):nextrow.append(min(nextrow[-1]+1,row[j]+1,row[j-1]+(w!=v)))
+                      row=nextrow
+                  wer=row[-1]/len(expected)
+                  audio_ok=wer<=0.2
+                  print('GROQ_ASR_PASS',audio_ok,'WER',round(wer,3),'transcript',' '.join(words),flush=True)
+          print('FINAL text',text_ok,'audio',audio_ok)
+          raise SystemExit(0 if text_ok and audio_ok else 1)
+          PY
