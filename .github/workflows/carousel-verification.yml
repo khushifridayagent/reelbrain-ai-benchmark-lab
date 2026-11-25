@@ -19,8 +19,9 @@ jobs:
       - name: Install media extraction tools
         run: |
           python -m pip install --quiet gallery-dl opencv-python-headless pillow requests
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
           command -v ffprobe
-          command -v tesseract
       - name: Verify all five carousel assets without provider API calls
         run: |
           python -u - <<'PY'
