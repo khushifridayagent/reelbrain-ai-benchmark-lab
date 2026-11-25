@@ -1,0 +1,58 @@
+name: Native hybrid live integration smoke
+on:
+  push:
+    paths: ['.github/workflows/native-hybrid-smoke.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install pinned runtime dependencies
+        run: |
+          python -m pip install numpy==2.2.6 opencv-python-headless==4.12.0.88 requests==2.32.5 pillow==11.3.0
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg tesseract-ocr tesseract-ocr-hin espeak
+      - name: Generate synthetic clip with one-frame hidden URL and speech
+        run: |
+          mkdir -p /tmp/native-smoke/frames
+          python - <<'PY'
+          from PIL import Image,ImageDraw,ImageFont
+          from pathlib import Path
+          p=Path('/tmp/native-smoke/frames')
+          font=ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',32)
+          for i in range(90):
+              im=Image.new('RGB',(640,360),'white')
+              d=ImageDraw.Draw(im)
+              d.text((20,30),'Native frame test',font=font,fill='black')
+              if i==13:d.text((20,170),'https://example.org/RB-731',font=font,fill='black')
+              im.save(p/f'{i:04d}.png')
+          PY
+          espeak -w /tmp/native-smoke/voice.wav "Blue robot opens the folder."
+          ffmpeg -nostdin -loglevel error -y -framerate 30 -i /tmp/native-smoke/frames/%04d.png -i /tmp/native-smoke/voice.wav -c:v libx264 -crf 0 -pix_fmt yuv420p -c:a aac -af apad -t 3 /tmp/native-smoke/test.mp4
+      - name: Run actual hybrid and check one-frame evidence
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: |
+          python -m native_intelligence.hybrid /tmp/native-smoke/test.mp4 --out /tmp/native-smoke/report.json --verify-frame 13
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('/tmp/native-smoke/report.json').read_text())
+          f=r['frame_index'][13]
+          o=r['observations'][f['sha256']]
+          exact='https://example.org/RB-731' in o['text']
+          print('NATIVE_HYBRID_RESULT',json.dumps({'decoded':r['frames_seen'],'expected':r['expected_frames'],'unique':r['unique_frames'],'ocr_complete':r['ocr_complete'],'one_frame_exact_url':exact,'timestamp_ms':f['timestamp_ms'],'state':r['state'],'report_bytes':Path('/tmp/native-smoke/report.json').stat().st_size,'local_seconds':r['elapsed_s'],'providers':{k:{'status':v.get('status'),'seconds':v.get('seconds')} for k,v in r['providers'].items()}}))
+          assert r['frames_seen']==90 and r['ocr_complete'] and exact
+          assert r['providers']['gemini']['status']==200 and r['providers']['groq_whisper']['status']==200 and r['providers']['groq_qwen_targeted']['status']==200
+          assert r['state']=='needs_review'
+          PY
