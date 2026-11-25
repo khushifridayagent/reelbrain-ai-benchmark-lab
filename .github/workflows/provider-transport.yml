@@ -1,0 +1,60 @@
+name: Gemini visual and Groq transport verification
+on:
+  push:
+    paths: ['.github/workflows/provider-transport.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Generate synthetic image and test current model
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: |
+          python - <<'PY'
+          import os,json,urllib.request,urllib.error,base64,struct,zlib,time
+          def send(label,url,headers,body=None):
+              start=time.monotonic()
+              try:
+                  req=urllib.request.Request(url,headers=headers,data=None if body is None else json.dumps(body).encode())
+                  with urllib.request.urlopen(req,timeout=40) as r:
+                      raw=r.read()
+                      print(label,'HTTP',r.status,'elapsed_s',round(time.monotonic()-start,3),flush=True)
+                      return json.loads(raw)
+              except urllib.error.HTTPError as e:
+                  raw=e.read(32768).decode('utf-8','replace').lower()
+                  content_type=e.headers.get('Content-Type','').lower()
+                  print(label,'HTTP',e.code,'json_content_type', 'json' in content_type,'html_content_type','html' in content_type,'cloudflare_ray_present',bool(e.headers.get('CF-Ray')),'proxy_header_present',bool(e.headers.get('Via')),'elapsed_s',round(time.monotonic()-start,3),flush=True)
+                  markers={'access denied':'access_denied','request blocked':'request_blocked','forbidden':'forbidden','cloudflare':'cloudflare','unsupported country':'unsupported_country','region':'region','permission':'permission','proxy':'proxy','policy':'policy','model_permission_blocked':'model_permission_blocked','invalid_api_key':'invalid_api_key','captcha':'captcha','challenge':'challenge'}
+                  print(label,'body_categories',','.join(v for k,v in markers.items() if k in raw),'body_bytes',len(raw),flush=True)
+                  return None
+              except Exception as e:
+                  print(label,type(e).__name__,flush=True);return None
+          def png():
+              def chunk(t,b):return struct.pack('>I',len(b))+t+b+struct.pack('>I',zlib.crc32(t+b)&0xffffffff)
+              w,h=180,100
+              pixels=b''.join(b'\x00'+b''.join(bytes((255,0,0) if x<90 else (0,0,255)) for x in range(w)) for y in range(h))
+              return b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',struct.pack('>IIBBBBB',w,h,8,2,0,0,0))+chunk(b'IDAT',zlib.compress(pixels))+chunk(b'IEND',b'')
+          g=os.environ.get('GEMINI_API_KEY','').strip()
+          q=os.environ.get('GROQ_API_KEY','').strip()
+          ok=False
+          if g:
+              body={'contents':[{'parts':[{'text':'Which color is on the left, and which on the right? Answer exactly LEFT=RED; RIGHT=BLUE if that is what you see.'},{'inline_data':{'mime_type':'image/png','data':base64.b64encode(png()).decode()}}]}]}
+              result=send('Gemini visual','https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent',{'x-goog-api-key':g,'Content-Type':'application/json'},body)
+              if result:
+                  output=' '.join(p.get('text','') for c in result.get('candidates',[]) for p in c.get('content',{}).get('parts',[]) if not p.get('thought')).upper()
+                  ok='LEFT=RED' in output and 'RIGHT=BLUE' in output
+                  print('GEMINI_IMAGE_PASS',ok, 'usage', {k:v for k,v in result.get('usageMetadata',{}).items() if isinstance(v,int)},flush=True)
+          url='https://api.groq.com/openai/v1/models'
+          ua={'User-Agent':'reelbrain-lab/1.0','Accept':'application/json'}
+          send('Groq unauthenticated control',url,ua)
+          if q.startswith('gsk_'):
+              r=send('Groq authenticated catalog',url,{**ua,'Authorization':'Bearer '+q})
+              if r: print('GROQ_CATALOG_PASS',len(r.get('data',[])))
+          print('GEMINI_IMAGE_RESULT',ok)
+          raise SystemExit(0 if ok else 1)
+          PY
