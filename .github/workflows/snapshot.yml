@@ -1,0 +1,50 @@
+name: Copy pinned read-only baseline
+on:
+  push:
+    paths:
+      - '.github/workflows/snapshot.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: isolated-baseline-snapshot
+  cancel-in-progress: false
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: khushifridayagent/reelbrain-ai-benchmark-lab
+          ref: main
+          path: lab
+      - uses: actions/checkout@v4
+        with:
+          repository: khushifridayagent/reelbrain-knowledge-engine
+          ref: 6b83a59ca82bed4316c166f20feb628a434f5549
+          persist-credentials: false
+          path: source
+      - name: Copy and verify all tracked files into inactive baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C source rev-parse HEAD)" = "6b83a59ca82bed4316c166f20feb628a434f5549"
+          test ! -e lab/baseline || { echo 'Baseline already exists; refusing overwrite'; exit 1; }
+          mkdir lab/baseline
+          git -C source archive HEAD | tar -x -C lab/baseline
+          python - <<'PY'
+          import subprocess, pathlib
+          files = subprocess.check_output(['git','-C','source','ls-files','-z']).split(b'\0')
+          paths = [p.decode() for p in files if p]
+          for p in paths:
+              assert (pathlib.Path('source')/p).read_bytes() == (pathlib.Path('lab/baseline')/p).read_bytes(), p
+          print('Verified byte-identical tracked files:',len(paths))
+          PY
+          cd lab
+          test "$(git remote get-url origin)" = "https://github.com/khushifridayagent/reelbrain-ai-benchmark-lab"
+          git config user.name 'reelbrain-lab'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -f baseline/
+          git commit -m 'Archive pinned public baseline; production workflows inactive'
+          git push origin HEAD:main
