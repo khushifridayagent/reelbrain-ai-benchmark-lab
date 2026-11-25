@@ -1,0 +1,40 @@
+name: Native isolated database tests
+on:
+  push:
+    paths: ['.github/workflows/native-db-tests.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  database:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    services:
+      pg:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: local-synthetic-test-only
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+        ports:
+          - 5432:5432
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Apply schema to disposable local PostgreSQL and test
+        env:
+          PGHOST: 127.0.0.1
+          PGPORT: 5432
+          PGUSER: postgres
+          PGPASSWORD: local-synthetic-test-only
+          PGDATABASE: postgres
+        run: |
+          command -v psql || (sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client)
+          psql -v ON_ERROR_STOP=1 -c 'create role anon; create role authenticated; create role service_role bypassrls;'
+          for file in schema.sql sender_verification.sql finish.sql test_ephemeral.sql; do
+            psql -v ON_ERROR_STOP=1 -f "native_intelligence/integration/$file"
+          done
